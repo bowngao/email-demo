@@ -1,86 +1,38 @@
-import os
-import io
 import streamlit as st
-import PyPDF2
-import base64
 import requests
-from dotenv import load_dotenv
-import json
-# from genai.schemas import GenerateParams
-# from genai.model import Model
-# from genai.credentials import Credentials
-load_dotenv()
+import io
+
+# change api_key
 api_key = "pak-co1XNgYIltFNovr-6062CCujNGjbPkI0RDH0cfNuYYY"
 api_url = "https://bam-api.res.ibm.com/v1/"
 
-st.set_page_config(page_title="Multi-Document Chat Bot", page_icon=":books:")
-st.title("Contract Advisor 🤖")
-st.subheader("Powered by IBM WatsonX")
-preview_tab, result_tab = st.tabs(["Contract Preview", "Result"])
+headers = {
+    "Content-Type": "application/json",
+    "Authorization": f"Bearer {api_key}"
+}
 
 
+# function - obtain pdf information
+def file_info(uploaded_file):
+    file_contents = uploaded_file.getvalue()
+    file_obj = io.BytesIO(file_contents)
+    with open(uploaded_file.name, "wb") as f:
+        f.write(file_contents)
+    file_path = f.name
+    st.write(f"You selected '{uploaded_file.name}'")
+    st.write(f"File path: {file_path}")
 
-def pdf_preview(pdf_data):
-    pdf_reader = PyPDF2.PdfReader(io.BytesIO(base64.b64decode(pdf_data)))
-    for page_number in range(len(pdf_reader.pages)):
-        page = pdf_reader.pages[page_number]
-        page_text = page.extract_text()
-        st.text(page_text)
-
-
-with preview_tab:
-    with st.sidebar:
-        st.title('🤗💬Please upload your file here.')
-        st.write('Advisor Bot based on uploaded documents')
-        # methods = ['QA based on uploaded documents']
-        # qa_method = st.sidebar.radio('Pick a method', methods)
-        # Display file upload fields
-        contract_file = st.file_uploader("Upload Contract PDF File", type="pdf")
-        email_file = st.file_uploader("Upload Email Text File", type="txt")
-
-        file_path = "./data/Quote Contract.pdf"  # Default value for file_path
-
-        if contract_file:
-            temp_file_save = "data/"
-            os.makedirs(temp_file_save, exist_ok=True)  # Create the 'data/' directory if it doesn't exist
-            uploaded_file_path = os.path.join(temp_file_save, contract_file.name)
-            with open(uploaded_file_path, "wb") as f:
-                f.write(contract_file.getbuffer())
-            file_path = f.name
-            st.session_state["pdf"] = ""
-        else:
-            st.session_state.pdf_processed = False
-        with open(file_path, "rb") as f:
-            base64_pdf = base64.b64encode(f.read()).decode('utf-8')
-            src = base64_pdf
-    pdf_preview(src)
+# upload email
+uploaded_email = st.file_uploader("Upload your email: ")
+if uploaded_email:
+    file_info(uploaded_email)
+# upload contract
+uploaded_contract = st.file_uploader("Upload your contract: ")
+if uploaded_contract:
+    file_info(uploaded_contract)
 
 
-    st.sidebar.markdown('''
-                ## About
-                This app is an LLM-powered chatbot built using:
-                - [WatsonX](https://dataplatform.cloud.ibm.com/wx/home?context=wx)
-                ''')
-
-with result_tab:
-    # Check if files are uploaded
-    if contract_file is not None and email_file is not None:
-        # Read contract PDF file and extract text
-        contract_pdf_path = "temp_contract.pdf"
-        with open(contract_pdf_path, "wb") as file:
-            file.write(contract_file.read())
-
-        with open(contract_pdf_path, "rb") as file:
-            reader = PyPDF2.PdfReader(file)
-            contract_text = ""
-            for page in reader.pages:
-                contract_text += page.extract_text()
-
-        # Read email content from TXT file
-        email_content = email_file.read()
-
-        # Prepare template and generate response
-        prompt_template = '''
+prompt_template = '''
         Obtain the context of discount percentage requests of products via email.
         Obtain the context of agreed discount of those products on contract. 
         Compare discounts for those products.
@@ -89,11 +41,7 @@ with result_tab:
         - Product Name: [Product Name]
         - Product Quantity: [Quantity]
         - discount on contract: [discount request from vender] %
-        - Product Quantity request in the email: [Quantity]
         - discount via email: [discount request by buyer] %
-        - Product Quantity: [Enough or not]
-        - discount: [Acceptable or not]
-        - Legality: [Based on the contract, determine there is any ambiguity in the email or not] 
         [Repeat the structure for each product mentioned in email]
 
         Answer the question based on the context below. If the question cannot be answered using the information provided answer with "I don't know".
@@ -105,46 +53,34 @@ with result_tab:
         Output: 
 
         '''
+contract_data = st.text_input("Is there any request? (eg. Please find out if there is any ambiguity.)")
+prompt = prompt_template.format(content=contract_data)
 
-        contract_data = st.text_input("Is there any request? (eg. Please find out if there is any ambiguity.)")
-        template = prompt_template.format(content=contract_data)
-
-        bam_input = {
-            "model_id": "meta-llama/llama-2-7b-chat",
-            "inputs": [template],
-            "parameters": {
-                "decoding_method": "greedy",
-                "temperature": 0.1,
-                "top_p": 0.8,
-                "top_k": 3,
-                "repetition_penalty": 1,
-                "min_new_tokens": 50,
-                "max_new_tokens": 1500
+data = {
+    "model_id": "meta-llama/llama-2-7b-chat",
+    "inputs": [prompt],
+    "parameters": {
+        "decoding_method": "greedy",
+        "repetition_penalty": 1,
+        "min_new_tokens": 50,
+        "max_new_tokens": 900,
+        "moderations": {
+            "hap": {
+                "input": True,
+                "threshold": 0.7,
+                "output": True
             }
         }
-        headers = {
-            "Content-Type": "application/json",
-            "Authorization": f"Bearer {api_key}"
-        }
+    }
+}
 
-        url = api_url + 'generate'
 
-        responses = requests.post(
-            url=url,
-            headers=headers,
-            json=bam_input
-        )
 
-        if responses.status_code == 200:
-            response_json = responses.json()
-            if 'results' in response_json and len(response_json['results']) > 0:
-                generated_text = response_json['results'][0].get('generated_text')
-                if generated_text:
-                    st.write("This is your answer:", generated_text)
-                else:
-                    st.write("No generated text found in the response.")
-            else:
-                st.write("No results found in the response.")
-        else:
-            st.write(f"Request failed with status code: {responses.status_code}")
-            st.write(f"Response content: {responses.content}")
+url = api_url + 'generate'
+response = requests.post(url=url, json=data, headers=headers)
+generated_text = response.json().get('results')[0]['generated_text']
+
+
+st.title("E_mail Check Function")
+
+st.write("This is your answer:", generated_text)
